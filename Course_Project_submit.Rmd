@@ -1,0 +1,122 @@
+---
+title: "Course Project"
+output: 
+  html_document:
+    keep_md: true
+---
+
+Declare some global variables.
+
+```{r}
+set.seed(383838)
+library(ggplot2); 
+p <- 0.75 # partition ratio
+k <- 10 # fold number
+```
+
+# Data processing
+
+Load the __training__ data set into `data.frame` and remove the rows with `new_window=="yes"`. Convert the class of `user_name` and `classe` into `factor`. 
+
+```{r}
+data <- read.csv('train.csv', as.is=TRUE, na.strings=c('', NA))
+data <- data[data$new_window == "no", ]
+data$classe <- factor(data$classe)
+data$user_name <- factor(data$user_name)
+```
+
+Resulting dataset contains `r dim(data)[1]` rows and `r dim(data)[2]` columns.
+
+Dataset contains large number of summary columns. Since summary rows have been removed those columns contain only `NA` values and are no longer relevant and can be removed.
+
+```{r}
+keepCol <- complete.cases(t(data))
+data <- data[, keepCol]
+```
+
+Several variables (like `num_window` or `cvtd_timestamp`) show clear functional relation with `classe` for each user. These variables are clearly related to the data collection process and I decided not to use any of these (as well as the user id) for my model.
+
+```{r}
+names(data[,1:7])
+data <- data[, 8:60]
+```
+
+From the resulting dataset I removed highly correlated variables using `caret::findCorrelation` function.
+
+```{r}
+# exclude highly-correlated columns
+colExclude <- caret::findCorrelation(cor(data[, -ncol(data)]), cutoff=0.8)
+data <- data[, -colExclude]
+```
+
+Only `r ncol(data)` columns left for training models. 
+Dataset has been splited into train and test dataset using `caret::createDataPartition` with `p` equal to `r p`.
+
+```{r}
+inTrain <- caret::createDataPartition(data$classe, p=p, list=FALSE)
+training <- data[inTrain, ]
+testing <- data[-inTrain, ]
+```
+
+Exploratory data analysis on the training data set showed a trend of multiple class-based clusters. Random forests might be suitable for training models.
+
+```{r}
+gridExtra::grid.arrange(
+    qplot(x=accel_forearm_x, y=yaw_forearm, data = training,col=classe),
+    qplot(x=magnet_dumbbell_x, y=yaw_dumbbell,data = training,col=classe),
+    qplot(x=total_accel_arm, y=yaw_arm,data = training,col=classe),
+    qplot(x=roll_arm, y=pitch_arm,data = training,col=classe),
+    ncol=2
+)
+```
+
+# Model building and Cross-validation
+
+First, I tried to train models with trees.
+
+```{r}
+# setting the attribute 'number' as k, for k-folds validation.
+# savePred will save all the predictions in each fold, allowing us to check what actually happend while training.
+ctrl <- caret::trainControl(method="cv", allowParallel = T, savePred=T, classProb=T, number = k)
+modelFitRpart <- caret::train(classe~., data=training, method = "rpart", trControl = ctrl)
+head(modelFitRpart$pred)
+predictionRpart <- predict(modelFitRpart, testing)
+cmatrixRpart <- caret::confusionMatrix(predictionRpart, testing$classe)
+cmatrixRpart$overall
+```
+
+However, the result is not so satisfying (the accuracy is `r cmatrixRpart$overall[[1]]`). Next, I proceed to build a model with random forest.
+
+```{r}
+# setting the attribute 'number' as k, for k-folds validation.
+# allowParallel=T will reduce the time for training. 
+# verboseIter=T will show the log of progress (taken out for the conciseness of the report).
+ctrl <- trainControl(method = "cv", number = k, allowParallel = T, savePred=T, classProb=T)
+modelFitRF <- caret::train(classe ~ ., data=training, method = "rf", trControl = ctrl)
+head(modelFitRF$pred)
+predictionRF <- predict(modelFitRF, testing)
+cmatrixRF <- caret::confusionMatrix(predictionRF, testing$classe)
+cmatrixRF
+```
+
+The results of random forest (`rf`) are better than trees (`rpart`) because the accuracy of using `rf` is `r cmatrixRF$overall[[1]]`) with the 95% confidence interval for accuracy between (`r cmatrixRF$overall[[3]]`, `r cmatrixRF$overall[[4]]`).
+
+# Final results
+
+Use the best model of random forest one on the testing data set, and examine its performance. 
+
+```{r}
+predictionFinal <- predict(modelFitRF, newdata = testing)
+cmatrixFinal <- caret::confusionMatrix(predictionFinal, testing$classe)
+cmatrixFinal
+```
+
+The final model allows us to make predictions with the accuracy of `r round(cmatrixFinal$overall[[1]]*100,2)` %. The 95% confidence interval for accuracy is between (`r round(cmatrixFinal$overall[[3]],4)`, `r round(cmatrixFinal$overall[[4]],4)`).
+
+# Making predictions for unknown data
+
+```{r}
+testingDS <- read.csv("test.csv", as.is=TRUE, na.strings=c('', NA))
+answers <- predict(modelFitRF,testingDS)
+answers
+```
